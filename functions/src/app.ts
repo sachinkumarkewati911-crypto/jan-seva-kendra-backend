@@ -25,6 +25,78 @@ const db = admin.firestore();
 const app = express();
 app.use(cors({ origin: true }));
 app.use(express.json({ limit: '1mb' }));
+// ONE-SHOT BOOTSTRAP: seeds geo masters + sample services and creates the first
+// ADMIN user. Runs only once — refuses when meta/bootstrap already exists.
+// Call immediately after deploy, then this endpoint becomes inert.
+app.post('/api/v1/bootstrap', async (req, res: Response) => {
+  try {
+    const done = await db.collection('meta').doc('bootstrap').get();
+    if (done.exists) return res.status(409).json({ error: 'already bootstrapped' });
+    const { adminEmail, adminPassword } = req.body || {};
+    if (typeof adminEmail !== 'string' || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(adminEmail))
+      return res.status(400).json({ error: 'valid adminEmail required' });
+    if (typeof adminPassword !== 'string' || adminPassword.length < 8)
+      return res.status(400).json({ error: 'adminPassword min 8 chars required' });
+
+    const batch = db.batch();
+    const STATES: Array<[string, string, string]> = [
+      ['AP', 'Andhra Pradesh', 'STATE'], ['AR', 'Arunachal Pradesh', 'STATE'], ['AS', 'Assam', 'STATE'],
+      ['BR', 'Bihar', 'STATE'], ['CT', 'Chhattisgarh', 'STATE'], ['GA', 'Goa', 'STATE'],
+      ['GJ', 'Gujarat', 'STATE'], ['HR', 'Haryana', 'STATE'], ['HP', 'Himachal Pradesh', 'STATE'],
+      ['JH', 'Jharkhand', 'STATE'], ['KA', 'Karnataka', 'STATE'], ['KL', 'Kerala', 'STATE'],
+      ['MP', 'Madhya Pradesh', 'STATE'], ['MH', 'Maharashtra', 'STATE'], ['MN', 'Manipur', 'STATE'],
+      ['ML', 'Meghalaya', 'STATE'], ['MZ', 'Mizoram', 'STATE'], ['NL', 'Nagaland', 'STATE'],
+      ['OD', 'Odisha', 'STATE'], ['PB', 'Punjab', 'STATE'], ['RJ', 'Rajasthan', 'STATE'],
+      ['SK', 'Sikkim', 'STATE'], ['TN', 'Tamil Nadu', 'STATE'], ['TS', 'Telangana', 'STATE'],
+      ['TR', 'Tripura', 'STATE'], ['UP', 'Uttar Pradesh', 'STATE'], ['UT', 'Uttarakhand', 'STATE'],
+      ['WB', 'West Bengal', 'STATE'],
+      ['AN', 'Andaman and Nicobar Islands', 'UNION_TERRITORY'], ['CH', 'Chandigarh', 'UNION_TERRITORY'],
+      ['DN', 'Dadra and Nagar Haveli and Daman and Diu', 'UNION_TERRITORY'], ['DL', 'Delhi', 'UNION_TERRITORY'],
+      ['JK', 'Jammu and Kashmir', 'UNION_TERRITORY'], ['LA', 'Ladakh', 'UNION_TERRITORY'],
+      ['LD', 'Lakshadweep', 'UNION_TERRITORY'], ['PY', 'Puducherry', 'UNION_TERRITORY'],
+    ];
+    for (const [code, name, type] of STATES)
+      batch.set(db.collection('states').doc(code), { code, name, type, active: true, createdAt: ts() });
+    const districts: Array<[string, string, string]> = [
+      ['UP-BAH', 'UP', 'Bahraich'], ['UP-LKO', 'UP', 'Lucknow'], ['UP-VNS', 'UP', 'Varanasi'],
+      ['BR-PAT', 'BR', 'Patna'], ['BR-GAY', 'BR', 'Gaya'],
+    ];
+    for (const [id, stateId, name] of districts)
+      batch.set(db.collection('districts').doc(id), { stateId, name, code: id, active: true, createdAt: ts() });
+    batch.set(db.collection('blocks').doc('UP-BAH-BLK1'), { districtId: 'UP-BAH', name: 'Bahraich Sadar', type: 'BLOCK', active: true, createdAt: ts() });
+    batch.set(db.collection('blocks').doc('UP-LKO-BLK1'), { districtId: 'UP-LKO', name: 'Lucknow Sadar', type: 'BLOCK', active: true, createdAt: ts() });
+    batch.set(db.collection('services').doc('svc-pan-card'), {
+      name: 'PAN Card', description: 'Naya PAN card ke liye aavedan', category: 'Identity',
+      serviceType: 'NATIONAL', requiredDocuments: [
+        { name: 'Aadhaar Card', mime: ['application/pdf', 'image/jpeg', 'image/png'], mandatory: true },
+        { name: 'Photo', mime: ['image/jpeg', 'image/png'], mandatory: true },
+      ],
+      applicationFee: 107, estimatedProcessingTimeDays: 15, activeStatus: true, createdAt: ts(), updatedAt: ts(),
+    });
+    batch.set(db.collection('services').doc('svc-up-income'), {
+      name: 'Uttar Pradesh Income Certificate', description: 'UP niwasion ke liye aay praman patra', category: 'Certificate',
+      serviceType: 'STATE', stateId: 'UP', requiredDocuments: [
+        { name: 'Aadhaar Card', mime: ['application/pdf', 'image/jpeg', 'image/png'], mandatory: true },
+      ],
+      applicationFee: 30, estimatedProcessingTimeDays: 10, activeStatus: true, createdAt: ts(), updatedAt: ts(),
+    });
+    batch.set(db.collection('services').doc('svc-bahraich-local'), {
+      name: 'Bahraich Local Service', description: 'Bahraich zila vishesh seva', category: 'Local',
+      serviceType: 'DISTRICT', stateId: 'UP', districtId: 'UP-BAH', requiredDocuments: [],
+      applicationFee: 0, estimatedProcessingTimeDays: 7, activeStatus: true, createdAt: ts(), updatedAt: ts(),
+    });
+
+    const user = await admin.auth().createUser({ email: adminEmail, password: adminPassword, emailVerified: true, displayName: 'Jan Seva Admin' });
+    batch.set(db.collection('users').doc(user.uid), { role: 'ADMIN', email: adminEmail, createdAt: ts() });
+    batch.set(db.collection('meta').doc('bootstrap'), { doneAt: ts(), adminUid: user.uid, adminEmail });
+    await batch.commit();
+    res.json({ ok: true, adminUid: user.uid, seeded: { states: STATES.length, districts: districts.length, blocks: 2, services: 3 } });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : 'bootstrap failed';
+    res.status(500).json({ error: msg });
+  }
+});
+
 app.use('/api/v1', requireAuth);
 
 const ts = () => admin.firestore.FieldValue.serverTimestamp();
@@ -505,76 +577,6 @@ app.get('/api/v1/csc/me/photo', async (req: AuthedRequest, res: Response) => {
   res.json({ downloadUrl: url });
 });
 
-// ONE-SHOT BOOTSTRAP: seeds geo masters + sample services and creates the first
-// ADMIN user. Runs only once — refuses when meta/bootstrap already exists.
-// Call immediately after deploy, then this endpoint becomes inert.
-app.post('/api/v1/bootstrap', async (req, res: Response) => {
-  try {
-    const done = await db.collection('meta').doc('bootstrap').get();
-    if (done.exists) return res.status(409).json({ error: 'already bootstrapped' });
-    const { adminEmail, adminPassword } = req.body || {};
-    if (typeof adminEmail !== 'string' || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(adminEmail))
-      return res.status(400).json({ error: 'valid adminEmail required' });
-    if (typeof adminPassword !== 'string' || adminPassword.length < 8)
-      return res.status(400).json({ error: 'adminPassword min 8 chars required' });
 
-    const batch = db.batch();
-    const STATES: Array<[string, string, string]> = [
-      ['AP', 'Andhra Pradesh', 'STATE'], ['AR', 'Arunachal Pradesh', 'STATE'], ['AS', 'Assam', 'STATE'],
-      ['BR', 'Bihar', 'STATE'], ['CT', 'Chhattisgarh', 'STATE'], ['GA', 'Goa', 'STATE'],
-      ['GJ', 'Gujarat', 'STATE'], ['HR', 'Haryana', 'STATE'], ['HP', 'Himachal Pradesh', 'STATE'],
-      ['JH', 'Jharkhand', 'STATE'], ['KA', 'Karnataka', 'STATE'], ['KL', 'Kerala', 'STATE'],
-      ['MP', 'Madhya Pradesh', 'STATE'], ['MH', 'Maharashtra', 'STATE'], ['MN', 'Manipur', 'STATE'],
-      ['ML', 'Meghalaya', 'STATE'], ['MZ', 'Mizoram', 'STATE'], ['NL', 'Nagaland', 'STATE'],
-      ['OD', 'Odisha', 'STATE'], ['PB', 'Punjab', 'STATE'], ['RJ', 'Rajasthan', 'STATE'],
-      ['SK', 'Sikkim', 'STATE'], ['TN', 'Tamil Nadu', 'STATE'], ['TS', 'Telangana', 'STATE'],
-      ['TR', 'Tripura', 'STATE'], ['UP', 'Uttar Pradesh', 'STATE'], ['UT', 'Uttarakhand', 'STATE'],
-      ['WB', 'West Bengal', 'STATE'],
-      ['AN', 'Andaman and Nicobar Islands', 'UNION_TERRITORY'], ['CH', 'Chandigarh', 'UNION_TERRITORY'],
-      ['DN', 'Dadra and Nagar Haveli and Daman and Diu', 'UNION_TERRITORY'], ['DL', 'Delhi', 'UNION_TERRITORY'],
-      ['JK', 'Jammu and Kashmir', 'UNION_TERRITORY'], ['LA', 'Ladakh', 'UNION_TERRITORY'],
-      ['LD', 'Lakshadweep', 'UNION_TERRITORY'], ['PY', 'Puducherry', 'UNION_TERRITORY'],
-    ];
-    for (const [code, name, type] of STATES)
-      batch.set(db.collection('states').doc(code), { code, name, type, active: true, createdAt: ts() });
-    const districts: Array<[string, string, string]> = [
-      ['UP-BAH', 'UP', 'Bahraich'], ['UP-LKO', 'UP', 'Lucknow'], ['UP-VNS', 'UP', 'Varanasi'],
-      ['BR-PAT', 'BR', 'Patna'], ['BR-GAY', 'BR', 'Gaya'],
-    ];
-    for (const [id, stateId, name] of districts)
-      batch.set(db.collection('districts').doc(id), { stateId, name, code: id, active: true, createdAt: ts() });
-    batch.set(db.collection('blocks').doc('UP-BAH-BLK1'), { districtId: 'UP-BAH', name: 'Bahraich Sadar', type: 'BLOCK', active: true, createdAt: ts() });
-    batch.set(db.collection('blocks').doc('UP-LKO-BLK1'), { districtId: 'UP-LKO', name: 'Lucknow Sadar', type: 'BLOCK', active: true, createdAt: ts() });
-    batch.set(db.collection('services').doc('svc-pan-card'), {
-      name: 'PAN Card', description: 'Naya PAN card ke liye aavedan', category: 'Identity',
-      serviceType: 'NATIONAL', requiredDocuments: [
-        { name: 'Aadhaar Card', mime: ['application/pdf', 'image/jpeg', 'image/png'], mandatory: true },
-        { name: 'Photo', mime: ['image/jpeg', 'image/png'], mandatory: true },
-      ],
-      applicationFee: 107, estimatedProcessingTimeDays: 15, activeStatus: true, createdAt: ts(), updatedAt: ts(),
-    });
-    batch.set(db.collection('services').doc('svc-up-income'), {
-      name: 'Uttar Pradesh Income Certificate', description: 'UP niwasion ke liye aay praman patra', category: 'Certificate',
-      serviceType: 'STATE', stateId: 'UP', requiredDocuments: [
-        { name: 'Aadhaar Card', mime: ['application/pdf', 'image/jpeg', 'image/png'], mandatory: true },
-      ],
-      applicationFee: 30, estimatedProcessingTimeDays: 10, activeStatus: true, createdAt: ts(), updatedAt: ts(),
-    });
-    batch.set(db.collection('services').doc('svc-bahraich-local'), {
-      name: 'Bahraich Local Service', description: 'Bahraich zila vishesh seva', category: 'Local',
-      serviceType: 'DISTRICT', stateId: 'UP', districtId: 'UP-BAH', requiredDocuments: [],
-      applicationFee: 0, estimatedProcessingTimeDays: 7, activeStatus: true, createdAt: ts(), updatedAt: ts(),
-    });
-
-    const user = await admin.auth().createUser({ email: adminEmail, password: adminPassword, emailVerified: true, displayName: 'Jan Seva Admin' });
-    batch.set(db.collection('users').doc(user.uid), { role: 'ADMIN', email: adminEmail, createdAt: ts() });
-    batch.set(db.collection('meta').doc('bootstrap'), { doneAt: ts(), adminUid: user.uid, adminEmail });
-    await batch.commit();
-    res.json({ ok: true, adminUid: user.uid, seeded: { states: STATES.length, districts: districts.length, blocks: 2, services: 3 } });
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : 'bootstrap failed';
-    res.status(500).json({ error: msg });
-  }
-});
 
 export default app;
