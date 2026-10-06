@@ -57,13 +57,16 @@ app.get('/api/v1/diag', async (_req, res: Response) => {
 // Call immediately after deploy, then this endpoint becomes inert.
 app.post('/api/v1/bootstrap', async (req, res: Response) => {
   try {
-    const done = await db.collection('meta').doc('bootstrap').get();
-    if (done.exists) return res.status(409).json({ error: 'already bootstrapped' });
+    console.log('BOOTSTRAP hit');
     const { adminEmail, adminPassword } = req.body || {};
     if (typeof adminEmail !== 'string' || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(adminEmail))
       return res.status(400).json({ error: 'valid adminEmail required' });
     if (typeof adminPassword !== 'string' || adminPassword.length < 8)
       return res.status(400).json({ error: 'adminPassword min 8 chars required' });
+    console.log('BOOTSTRAP validated, checking meta');
+    const done = await db.collection('meta').doc('bootstrap').get();
+    console.log('BOOTSTRAP meta read done, exists=' + done.exists);
+    if (done.exists) return res.status(409).json({ error: 'already bootstrapped' });
 
     const batch = db.batch();
     const STATES: Array<[string, string, string]> = [
