@@ -1,0 +1,15 @@
+rules_version = '2';
+// Jan Seva Kendra — Storage rules.
+// No direct client uploads/downloads of application documents.
+// Backend mints short-lived signed URLs after ownership checks.
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /applications/{appId}/{fileName} {
+      allow read, write: if false;
+    }
+    match /csc/{cscId}/{fileName} {
+      allow read: if request.auth != null;
+      allow write: if false; // CSC photos/docs uploaded via backend signed URLs
+    }
+  }
+}

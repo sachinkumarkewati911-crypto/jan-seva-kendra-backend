@@ -1,0 +1,1 @@
+{"firestore":{"indexes":"firestore.indexes.json","rules":"firestore.rules"},"functions":[{"codebase":"default","runtime":"nodejs20","source":"functions"}],"storage":{"rules":"storage.rules"}}

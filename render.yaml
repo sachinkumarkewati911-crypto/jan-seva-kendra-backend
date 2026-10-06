@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: jan-seva-kendra-api
+    runtime: node
+    plan: free
+    buildCommand: cd functions && npm install && npm run build
+    startCommand: node functions/lib/server.js
+    envVars:
+      - key: FIREBASE_SERVICE_ACCOUNT
+        sync: false
+      - key: FIREBASE_STORAGE_BUCKET
+        value: jan-seva-kendra-d081e.appspot.com
