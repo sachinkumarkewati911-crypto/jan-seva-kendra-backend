@@ -26,6 +26,33 @@ const app = express();
 app.use(cors({ origin: true }));
 app.use(express.json({ limit: '1mb' }));
 // ONE-SHOT BOOTSTRAP: seeds geo masters + sample services and creates the first
+// TEMPORARY DIAGNOSTIC: tests Google API connectivity step by step.
+app.get('/api/v1/diag', async (_req, res: Response) => {
+  const out: Record<string, string> = {};
+  const withTimeout = <T>(p: Promise<T>, ms: number, label: string): Promise<T> =>
+    Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error(label + ' TIMEOUT after ' + ms + 'ms')), ms))]);
+  try {
+    const t0 = Date.now();
+    try {
+      const cred = (admin.app().options as { credential?: { getAccessToken?: () => Promise<{ access_token?: string }> } }).credential;
+      if (cred?.getAccessToken) {
+        const tok = await withTimeout(cred.getAccessToken(), 25000, 'oauth2-token');
+        out.oauth2 = tok?.access_token ? `OK (${Date.now() - t0}ms)` : 'NO_TOKEN';
+      } else out.oauth2 = 'no-getAccessToken';
+    } catch (e) { out.oauth2 = 'FAIL: ' + (e instanceof Error ? e.message : String(e)); }
+    const t1 = Date.now();
+    try {
+      const snap = await withTimeout(db.collection('meta').doc('bootstrap').get(), 25000, 'firestore-read');
+      out.firestore = `OK exists=${snap.exists} (${Date.now() - t1}ms)`;
+    } catch (e) { out.firestore = 'FAIL: ' + (e instanceof Error ? e.message : String(e)); }
+    const t2 = Date.now();
+    try {
+      await withTimeout(fetch('https://www.googleapis.com/', { method: 'HEAD' }), 15000, 'https-googleapis');
+      out.https_googleapis = `OK (${Date.now() - t2}ms)`;
+    } catch (e) { out.https_googleapis = 'FAIL: ' + (e instanceof Error ? e.message : String(e)); }
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: e instanceof Error ? e.message : String(e), partial: out }); }
+});
 // ADMIN user. Runs only once — refuses when meta/bootstrap already exists.
 // Call immediately after deploy, then this endpoint becomes inert.
 app.post('/api/v1/bootstrap', async (req, res: Response) => {
