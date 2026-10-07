@@ -133,6 +133,27 @@ const ts = () => admin.firestore.FieldValue.serverTimestamp();
 const ALLOWED_MIME = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'];
 const MAX_DOC_BYTES = 10 * 1024 * 1024;
 
+// Recursively convert Firestore Timestamps to ISO strings so Android/JSON
+// clients always receive strings for date fields (fixes "Expected a string
+// but was BEGIN_OBJECT" parse errors).
+function ser(v: any): any {
+  if (v == null) return v;
+  if (typeof (v as any)?.toDate === 'function') {
+    try { return (v as any).toDate().toISOString(); } catch { return String(v); }
+  }
+  if (Array.isArray(v)) return v.map(ser);
+  if (typeof v === 'object') {
+    if (typeof (v as any)._seconds === 'number') {
+      const ms = (v as any)._seconds * 1000 + Math.floor(((v as any)._nanoseconds || 0) / 1e6);
+      return new Date(ms).toISOString();
+    }
+    const o: any = {};
+    for (const k of Object.keys(v)) o[k] = ser((v as any)[k]);
+    return o;
+  }
+  return v;
+}
+
 function genAppId(): string {
   return `APP-${new Date().getFullYear()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
 }
@@ -173,19 +194,19 @@ app.post('/api/v1/auth/session', async (req: AuthedRequest, res: Response) => {
 // ---------------- Geo masters ----------------
 app.get('/api/v1/geo/states', async (_req, res: Response) => {
   const s = await db.collection('states').where('active', '==', true).orderBy('name').get();
-  res.json(s.docs.map(d => ({ id: d.id, ...d.data() })));
+  res.json(ser(s.docs.map(d => ({ id: d.id, ...d.data() }))));
 });
 app.get('/api/v1/geo/districts', async (req, res: Response) => {
   const s = await db.collection('districts').where('stateId', '==', String(req.query.stateId)).where('active', '==', true).orderBy('name').get();
-  res.json(s.docs.map(d => ({ id: d.id, ...d.data() })));
+  res.json(ser(s.docs.map(d => ({ id: d.id, ...d.data() }))));
 });
 app.get('/api/v1/geo/blocks', async (req, res: Response) => {
   const s = await db.collection('blocks').where('districtId', '==', String(req.query.districtId)).where('active', '==', true).orderBy('name').get();
-  res.json(s.docs.map(d => ({ id: d.id, ...d.data() })));
+  res.json(ser(s.docs.map(d => ({ id: d.id, ...d.data() }))));
 });
 app.get('/api/v1/geo/villages', async (req, res: Response) => {
   const s = await db.collection('villages').where('blockId', '==', String(req.query.blockId)).where('active', '==', true).orderBy('name').get();
-  res.json(s.docs.map(d => ({ id: d.id, ...d.data() })));
+  res.json(ser(s.docs.map(d => ({ id: d.id, ...d.data() }))));
 });
 
 // Save user's region (public profile)
@@ -253,12 +274,12 @@ app.get('/api/v1/csc/nearby', async (req: AuthedRequest, res: Response) => {
       .sort((a, b) => (a.distanceKm as number) - (b.distanceKm as number));
   }
   // Public card fields only — no internal data leaks.
-  res.json(list.map(c => ({
+  res.json(ser(list.map(c => ({
     id: c.id, centerName: c.centerName, vleName: c.vleName,
     distanceKm: (c as unknown as { distanceKm?: number }).distanceKm ?? null,
     address: c.address, stateId: c.stateId, districtId: c.districtId,
     mobile: c.mobile, openHours: c.openHours || null, rating: c.rating || null,
-  })));
+  }))));
 });
 
 // ---------------- CSC registration (public -> pending) ----------------
@@ -330,7 +351,7 @@ app.post('/api/v1/applications', async (req: AuthedRequest, res: Response) => {
 // Public: my applications
 app.get('/api/v1/applications/mine', async (req: AuthedRequest, res: Response) => {
   const s = await db.collection('applications').where('applicantId', '==', req.uid!).orderBy('createdAt', 'desc').limit(100).get();
-  res.json(s.docs.map(d => ({ id: d.id, ...d.data() })));
+  res.json(ser(s.docs.map(d => ({ id: d.id, ...d.data() }))));
 });
 
 // Public: application detail + timeline (ownership enforced by rules + check)
@@ -341,7 +362,7 @@ app.get('/api/v1/applications/:id', async (req: AuthedRequest, res: Response) =>
   const own = a.applicantId === req.uid || a.selectedCscId === req.ctx?.cscId || req.ctx?.role === 'ADMIN';
   if (!own) return res.status(403).json({ error: 'forbidden' });
   const h = await db.collection('application_status_history').where('applicationId', '==', req.params.id).orderBy('createdAt', 'asc').get();
-  res.json({ id: d.id, ...a, timeline: h.docs.map(x => x.data()) });
+  res.json(ser({ id: d.id, ...a, timeline: h.docs.map(x => x.data()) }));
 });
 
 // ---------------- Sanchalak ----------------
@@ -349,7 +370,7 @@ app.get('/api/v1/sanchalak/applications', requireCsc, async (req: AuthedRequest,
   let q: FirebaseFirestore.Query = db.collection('applications').where('selectedCscId', '==', req.ctx!.cscId!).orderBy('createdAt', 'desc');
   if (req.query.status) q = db.collection('applications').where('selectedCscId', '==', req.ctx!.cscId!).where('status', '==', String(req.query.status)).orderBy('createdAt', 'desc');
   const s = await q.limit(100).get();
-  res.json(s.docs.map(d => ({ id: d.id, ...d.data() })));
+  res.json(ser(s.docs.map(d => ({ id: d.id, ...d.data() }))));
 });
 
 app.patch('/api/v1/sanchalak/applications/:id/status', requireCsc, async (req: AuthedRequest, res: Response) => {
@@ -444,7 +465,7 @@ app.get('/api/v1/admin/csc', adminOnly, async (req, res: Response) => {
   let q: FirebaseFirestore.Query = db.collection('csc_centers').orderBy('createdAt', 'desc');
   if (req.query.verificationStatus) q = db.collection('csc_centers').where('verificationStatus', '==', String(req.query.verificationStatus)).orderBy('createdAt', 'desc');
   const s = await q.limit(100).get();
-  res.json(s.docs.map(d => ({ id: d.id, ...d.data() })));
+  res.json(ser(s.docs.map(d => ({ id: d.id, ...d.data() }))));
 });
 
 app.patch('/api/v1/admin/csc/:id/verify', adminOnly, async (req: AuthedRequest, res: Response) => {
@@ -501,7 +522,7 @@ app.get('/api/v1/admin/applications', adminOnly, async (req, res: Response) => {
   let q: FirebaseFirestore.Query = db.collection('applications').orderBy('createdAt', 'desc');
   if (req.query.status) q = db.collection('applications').where('status', '==', String(req.query.status)).orderBy('createdAt', 'desc');
   const s = await q.limit(100).get();
-  res.json(s.docs.map(d => ({ id: d.id, ...d.data() })));
+  res.json(ser(s.docs.map(d => ({ id: d.id, ...d.data() }))));
 });
 
 // Reassign application to another CSC (admin only, audited)
@@ -522,7 +543,7 @@ app.post('/api/v1/admin/applications/:id/reassign', adminOnly, async (req: Authe
 
 app.get('/api/v1/admin/audit-logs', adminOnly, async (_req, res: Response) => {
   const s = await db.collection('audit_logs').orderBy('createdAt', 'desc').limit(100).get();
-  res.json(s.docs.map(d => ({ id: d.id, ...d.data() })));
+  res.json(ser(s.docs.map(d => ({ id: d.id, ...d.data() }))));
 });
 
 // Admin: list services (Service Management page)
@@ -530,7 +551,7 @@ app.get('/api/v1/admin/services', adminOnly, async (req, res: Response) => {
   let q: FirebaseFirestore.Query = db.collection('services').orderBy('createdAt', 'desc');
   if (req.query.serviceType) q = db.collection('services').where('serviceType', '==', String(req.query.serviceType)).orderBy('createdAt', 'desc');
   const s = await q.limit(200).get();
-  res.json(s.docs.map(d => ({ id: d.id, ...d.data() })));
+  res.json(ser(s.docs.map(d => ({ id: d.id, ...d.data() }))));
 });
 
 // Admin: list users (role filter: PUBLIC_USER / CSC_SANCHALAK)
@@ -538,7 +559,7 @@ app.get('/api/v1/admin/users', adminOnly, async (req, res: Response) => {
   let q: FirebaseFirestore.Query = db.collection('users').orderBy('createdAt', 'desc');
   if (req.query.role) q = db.collection('users').where('role', '==', String(req.query.role)).orderBy('createdAt', 'desc');
   const s = await q.limit(100).get();
-  res.json(s.docs.map(d => ({ id: d.id, ...d.data() })));
+  res.json(ser(s.docs.map(d => ({ id: d.id, ...d.data() }))));
 });
 
 // Admin: geo master writes (states/districts/blocks/villages) — audited
@@ -586,7 +607,7 @@ app.get('/api/v1/sanchalak/applications/:id', requireCsc, async (req: AuthedRequ
 // Notifications inbox — sirf apne notifications
 app.get('/api/v1/notifications', async (req: AuthedRequest, res: Response) => {
   const s = await db.collection('notifications').where('recipientUserId', '==', req.uid!).orderBy('createdAt', 'desc').limit(50).get();
-  res.json(s.docs.map(d => ({ id: d.id, ...d.data() })));
+  res.json(ser(s.docs.map(d => ({ id: d.id, ...d.data() }))));
 });
 
 // Sanchalak: apne center ka profile (photoUrl ke saath)
