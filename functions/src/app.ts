@@ -375,6 +375,32 @@ app.patch('/api/v1/sanchalak/applications/:id/status', requireCsc, async (req: A
 });
 
 // ---------------- Documents (signed URLs) ----------------
+// Direct base64 document upload (FREE alternative to Firebase Storage — stores in Firestore).
+// POST /api/v1/applications/:id/documents {docType, fileName, mimeType, dataBase64}
+// Max 700KB base64 (~525KB file) to stay under Firestore 1MB doc limit.
+app.post('/api/v1/applications/:id/documents', async (req: AuthedRequest, res: Response) => {
+  const { docType, fileName, mimeType, dataBase64 } = req.body as { docType?: string; fileName?: string; mimeType?: string; dataBase64?: string };
+  if (!docType || !fileName || !mimeType || !dataBase64) return res.status(400).json({ error: 'docType, fileName, mimeType, dataBase64 required' });
+  if (!ALLOWED_MIME.includes(mimeType)) return res.status(400).json({ error: 'file type not allowed (pdf/jpg/jpeg/png only)' });
+  if (dataBase64.length > 700 * 1024) return res.status(400).json({ error: 'file too large (max ~500KB after compression)' });
+  const d = await db.collection('applications').doc(req.params.id).get();
+  if (!d.exists) return res.status(404).json({ error: 'not found' });
+  const a = d.data()!;
+  const canUpload = a.applicantId === req.uid || a.selectedCscId === req.ctx?.cscId;
+  if (!canUpload) return res.status(403).json({ error: 'forbidden' });
+  const docId = db.collection('application_documents').doc().id;
+  await db.collection('application_documents').doc(docId).set({
+    applicationId: req.params.id, docType, fileName, mimeType,
+    sizeBytes: Math.round(dataBase64.length * 0.75),
+    dataBase64, storageType: 'firestore',
+    uploadedBy: req.uid, createdAt: ts(),
+  });
+  if (a.selectedCscId && req.uid === a.applicantId) {
+    const csc = (await db.collection('csc_centers').doc(a.selectedCscId).get()).data() as CscDoc;
+    if (csc) await notify(csc.ownerUserId, 'Naya document upload hua', `Application ${req.params.id} me document joda gaya`, 'DOC_UPLOADED', req.params.id);
+  }
+  res.json({ docId, ok: true });
+});
 app.post('/api/v1/applications/:id/documents/upload-url', async (req: AuthedRequest, res: Response) => {
   const { fileName, mimeType, sizeBytes, docType } = req.body;
   if (!fileName || !mimeType || !docType) return res.status(400).json({ error: 'fileName, mimeType, docType required' });
